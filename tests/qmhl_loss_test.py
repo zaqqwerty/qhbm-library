@@ -56,27 +56,29 @@ class QMHLTest(tf.test.TestCase):
     qmhl_wrapper = tf.function(qmhl_loss.qmhl)
     for num_qubits in self.num_qubits_list:
       qubits = cirq.GridQubit.rect(1, num_qubits)
-      data_h, data_infer = test_util.get_random_hamiltonian_and_inference(
+      data_qhbm = test_util.get_random_qhbm(
           qubits, num_layers, f"data_objects_{num_qubits}", self.num_samples)
-      model_h, model_infer = test_util.get_random_hamiltonian_and_inference(
+      model_qhbm = test_util.get_random_qhbm(
           qubits,
           num_layers,
           f"hamiltonian_objects_{num_qubits}",
           self.num_samples,
           initializer_seed=self.tf_random_seed)
+      data_h = data_qhbm.hamiltonian
+      model_h = model_qhbm.hamiltonian
       # Set data equal to the model
       data_h.set_weights(model_h.get_weights())
-      data = quantum_data.QHBMData(data_infer)
+      data = quantum_data.QHBMData(data_qhbm)
 
       # Trained loss is the entropy.
-      expected_loss = model_infer.e_inference.entropy()
+      expected_loss = model_qhbm.e_inference.entropy()
       # Since this is the optimum, derivatives should all be zero.
       expected_loss_derivative = [
           tf.zeros_like(v) for v in model_h.trainable_variables
       ]
 
       with tf.GradientTape() as tape:
-        actual_loss = qmhl_wrapper(data, model_infer)
+        actual_loss = qmhl_wrapper(data, model_qhbm)
       actual_loss_derivative = tape.gradient(actual_loss,
                                              model_h.trainable_variables)
 
@@ -116,7 +118,7 @@ class QMHLTest(tf.test.TestCase):
     for num_qubits in self.num_qubits_list:
       qubits = cirq.GridQubit.rect(1, num_qubits)
       num_layers = 2
-      _, data_qhbm = test_util.get_random_hamiltonian_and_inference(
+      data_qhbm = test_util.get_random_qhbm(
           qubits,
           num_layers,
           f"data_objects_{num_qubits}",
@@ -125,7 +127,7 @@ class QMHLTest(tf.test.TestCase):
           ebm_seed=self.tfp_seed)
       data = quantum_data.QHBMData(data_qhbm)
 
-      model_h, model_qhbm = test_util.get_random_hamiltonian_and_inference(
+      model_qhbm = test_util.get_random_qhbm(
           qubits,
           num_layers,
           f"model_objects_{num_qubits}",

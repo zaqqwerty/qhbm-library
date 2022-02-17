@@ -36,17 +36,17 @@ class QHBMDataTest(tf.test.TestCase):
     for num_qubits in self.num_qubits_list:
       qubits = cirq.GridQubit.rect(1, num_qubits)
       num_layers = 5
-      _, qhbm = test_util.get_random_hamiltonian_and_inference(
+      qhbm_data = test_util.get_random_qhbm(
           qubits,
           num_layers,
           f"data_objects_{num_qubits}",
           self.num_samples,
           ebm_seed=self.tfp_seed)
-      hamiltonian, _ = test_util.get_random_hamiltonian_and_inference(
+      qhbm_measure = test_util.get_random_qhbm(
           qubits, num_layers, f"observable_{num_qubits}", self.num_samples)
       expected_expectation = tf.squeeze(qhbm.expectation(hamiltonian))
 
       data = quantum_data.QHBMData(qhbm)
-      actual_expectation = data.expectation(hamiltonian)
+      actual_expectation = data.expectation(qhbm_measure.hamiltonian)
 
       self.assertAllClose(actual_expectation, expected_expectation)

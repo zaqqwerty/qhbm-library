@@ -33,7 +33,7 @@ from qhbmlib import hamiltonian_infer
 from qhbmlib import hamiltonian_model
 
 
-def get_random_hamiltonian_and_inference(qubits,
+def get_random_qhbm(qubits,
                                          num_layers,
                                          identifier,
                                          num_samples,
@@ -59,7 +59,7 @@ def get_random_hamiltonian_and_inference(qubits,
   q_infer = circuit_infer.QuantumInference(circuit, name=identifier)
   qhbm = hamiltonian_infer.QHBM(e_infer, q_infer)
 
-  return qhbm.hamiltonian, qhbm
+  return qhbm
 
 
 def get_random_pauli_sum(qubits):

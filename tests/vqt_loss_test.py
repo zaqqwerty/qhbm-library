@@ -52,18 +52,20 @@ class VQTTest(tf.test.TestCase):
     for num_qubits in self.num_qubits_list:
       qubits = cirq.GridQubit.rect(1, num_qubits)
       num_layers = 5
-      data_h, data_infer = test_util.get_random_hamiltonian_and_inference(
+      data_qhbm = test_util.get_random_qhbm(
           qubits,
           num_layers,
           f"data_objects_{num_qubits}",
           self.num_samples,
           ebm_seed=self.tfp_seed)
-      model_h, model_infer = test_util.get_random_hamiltonian_and_inference(
+      model_qhbm = test_util.get_random_qhbm(
           qubits,
           num_layers,
           f"hamiltonian_objects_{num_qubits}",
           self.num_samples,
           ebm_seed=self.tfp_seed)
+      data_h = data_qhbm.hamiltonian
+      model_h = model_qhbm.hamiltonian
 
       # Set data equal to the model
       data_h.set_weights(model_h.get_weights())
@@ -72,14 +74,14 @@ class VQTTest(tf.test.TestCase):
       vqt = tf.function(vqt_loss.vqt)
 
       # Trained loss is minus log partition of the data.
-      expected_loss = -1.0 * data_infer.e_inference.log_partition()
+      expected_loss = -1.0 * data_qhbm.e_inference.log_partition()
       # Since this is the optimum, derivatives should all be zero.
       expected_loss_derivative = [
           tf.zeros_like(v) for v in model_h.trainable_variables
       ]
 
       with tf.GradientTape() as tape:
-        actual_loss = vqt(model_infer, data_h, beta)
+        actual_loss = vqt(model_qhbm, data_h, beta)
       actual_loss_derivative = tape.gradient(actual_loss,
                                              model_h.trainable_variables)
       self.assertAllClose(actual_loss, expected_loss, self.close_rtol)
@@ -93,19 +95,19 @@ class VQTTest(tf.test.TestCase):
     # TODO(#171): This delta function seems like something general.
     #             Would need to perturb an unrolled version of `var`,
     #             whereas here variables are known to be 1D.
-    def delta_vqt(k, var, model_infer, data_h, beta, delta):
+    def delta_vqt(k, var, model_qhbm, data_h, beta, delta):
       """Calculate the expectation with kth entry of `var` perturbed."""
       num_elts = tf.size(var)
       old_value = var.read_value()
       var.assign(old_value + delta * tf.one_hot(k, num_elts, 1.0, 0.0))
-      delta_loss = vqt(model_infer, data_h, beta)
+      delta_loss = vqt(model_qhbm, data_h, beta)
       var.assign(old_value)
       return delta_loss
 
     delta = 1e-1
     vqt = tf.function(vqt_loss.vqt)
 
-    def vqt_derivative(variables_list, model_infer, data_h, beta):
+    def vqt_derivative(variables_list, model_qhbm, data_h, beta):
       """Approximately differentiates VQT with respect to the inputs"""
       derivatives = []
       for var in variables_list:
@@ -113,7 +115,7 @@ class VQTTest(tf.test.TestCase):
         num_elts = tf.size(var)  # Assumes variable is 1D
         for n in range(num_elts):
           this_derivative = test_util.approximate_derivative(
-              functools.partial(delta_vqt, n, var, model_infer, data_h, beta),
+              functools.partial(delta_vqt, n, var, model_qhbm, data_h, beta),
               delta=delta)
           var_derivative_list.append(this_derivative.numpy())
         derivatives.append(tf.constant(var_derivative_list))
@@ -122,33 +124,35 @@ class VQTTest(tf.test.TestCase):
     for num_qubits in self.num_qubits_list:
       qubits = cirq.GridQubit.rect(1, num_qubits)
       num_layers = 1
-      data_h, _ = test_util.get_random_hamiltonian_and_inference(
+      data_qhbm = test_util.get_random_qhbm(
           qubits,
           num_layers,
           f"data_objects_{num_qubits}",
           self.num_samples,
           initializer_seed=self.tf_random_seed,
           ebm_seed=self.tfp_seed)
-      model_h, model_infer = test_util.get_random_hamiltonian_and_inference(
+      model_qhbm = test_util.get_random_qhbm(
           qubits,
           num_layers,
           f"hamiltonian_objects_{num_qubits}",
           self.num_samples,
           initializer_seed=self.tf_random_seed_alt,
           ebm_seed=self.tfp_seed_alt)
+      data_h = data_qhbm.hamiltonian
+      model_h = model_qhbm.hamiltonian
 
       beta = tf.random.uniform([], 0.1, 10, tf.float32, self.tf_random_seed)
 
       with tf.GradientTape() as tape:
-        actual_loss = vqt(model_infer, data_h, beta)
+        actual_loss = vqt(model_qhbm, data_h, beta)
       actual_derivative_model, actual_derivative_data = tape.gradient(
           actual_loss,
           (model_h.trainable_variables, data_h.trainable_variables))
 
       expected_derivative_model = vqt_derivative(model_h.trainable_variables,
-                                                 model_infer, data_h, beta)
+                                                 model_qhbm, data_h, beta)
       expected_derivative_data = vqt_derivative(data_h.trainable_variables,
-                                                model_infer, data_h, beta)
+                                                model_qhbm, data_h, beta)
       # Changing model parameters is working if finite difference derivatives
       # are non-zero.  Also confirms that model_h and data_h are different.
       tf.nest.map_structure(

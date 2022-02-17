@@ -56,8 +56,9 @@ class QMHLTest(tf.test.TestCase):
     qmhl_wrapper = tf.function(qmhl_loss.qmhl)
     for num_qubits in self.num_qubits_list:
       qubits = cirq.GridQubit.rect(1, num_qubits)
-      data_qhbm = test_util.get_random_qhbm(
-          qubits, num_layers, f"data_objects_{num_qubits}", self.num_samples)
+      data_qhbm = test_util.get_random_qhbm(qubits, num_layers,
+                                            f"data_objects_{num_qubits}",
+                                            self.num_samples)
       model_qhbm = test_util.get_random_qhbm(
           qubits,
           num_layers,
@@ -134,6 +135,7 @@ class QMHLTest(tf.test.TestCase):
           self.num_samples,
           initializer_seed=self.tf_random_seed_alt,
           ebm_seed=self.tfp_seed)
+      model_h = model_qhbm.hamiltonian
       # Make sure variables are trainable
       self.assertGreater(len(model_h.trainable_variables), 1)
       with tf.GradientTape() as tape:

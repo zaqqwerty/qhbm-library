@@ -34,15 +34,15 @@ from qhbmlib import hamiltonian_model
 
 
 def get_random_qhbm(qubits,
-                                         num_layers,
-                                         identifier,
-                                         num_samples,
-                                         minval_thetas=-1.0,
-                                         maxval_thetas=1.0,
-                                         minval_phis=-1.0,
-                                         maxval_phis=1.0,
-                                         initializer_seed=None,
-                                         ebm_seed=None):
+                    num_layers,
+                    identifier,
+                    num_samples,
+                    minval_thetas=-1.0,
+                    maxval_thetas=1.0,
+                    minval_phis=-1.0,
+                    maxval_phis=1.0,
+                    initializer_seed=None,
+                    ebm_seed=None):
   """Create a random QHBM for use in testing."""
   num_qubits = len(qubits)
   ebm_init = tf.keras.initializers.RandomUniform(

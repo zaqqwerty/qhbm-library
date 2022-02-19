@@ -68,13 +68,13 @@ class FidelityTest(tf.test.TestCase):
     num_samples = 1  # required but not used
     qubits = cirq.GridQubit.rect(1, num_bits)
     num_layers = 3
-    model, _ = test_util.get_random_qhbm(qubits, num_layers, "test_fidelity",
+    qhbm = test_util.get_random_qhbm(qubits, num_layers, "test_fidelity",
                                          num_samples)
 
     density_matrix_wrapper = tf.function(hamiltonian_infer_utils.density_matrix)
-    model_dm = density_matrix_wrapper(model)
+    model_dm = density_matrix_wrapper(qhbm.hamiltonian)
     fidelity_wrapper = tf.function(hamiltonian_infer_utils.fidelity)
-    actual_fidelity = fidelity_wrapper(model, model_dm)
+    actual_fidelity = fidelity_wrapper(qhbm.hamiltonian, model_dm)
 
     expected_fidelity = 1.0
     self.assertAllClose(

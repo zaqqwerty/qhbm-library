@@ -31,6 +31,7 @@ class QuantumInference(tf.keras.layers.Layer):
 
   def __init__(self,
                input_circuit: circuit.QuantumCircuit,
+               expectation_samples: Union[None, int] = None,
                backend: Union[str, cirq.Sampler] = "noiseless",
                differentiator: Union[None,
                                      tfq.differentiators.Differentiator] = None,
@@ -39,14 +40,20 @@ class QuantumInference(tf.keras.layers.Layer):
 
     Args:
       input_circuit: The parameterized quantum circuit on which to do inference.
+      expectation_samples: Number of samples to use when estimating the
+        expectation value of a Hamiltonian with a general BitstringEnergy.
+        If None, can only use Hamiltonians whose energy inherits PauliMixin.
       backend: Specifies what backend TFQ will use to compute expectation
         values. `str` options are {"noisy", "noiseless"}; users may also specify
         a preconfigured cirq execution object to use instead.
       differentiator: Specifies how to take the derivative of a quantum circuit.
+        Note that general Hamiltonian observables are only supported if this
+        value is not None.
       name: Identifier for this inference engine.
     """
     input_circuit.build([])
     self._circuit = input_circuit
+    self.expectation_samples = expectation_samples
     self._differentiator = differentiator
     self._backend = backend
     self._sample_layer = tfq.layers.Sample(backend=backend)
@@ -109,6 +116,7 @@ class QuantumInference(tf.keras.layers.Layer):
       unaveraged expectation values of each `operator` against each
       transformed initial state.
     """
+    samples_only = False
     if isinstance(observables, tf.Tensor):
       u = self.circuit
       ops = observables
@@ -120,24 +128,37 @@ class QuantumInference(tf.keras.layers.Layer):
           lambda x: tf.expand_dims(
               observables.energy.operator_expectation(x), 0), y)
     else:
-      raise NotImplementedError(
-          "General `BitstringEnergy` models not yet supported.")
+      u = self.circuit + observables.circuit_dagger
+      post_process = lambda x: x
+      samples_only = True
 
     unique_states, idx, counts = utils.unique_bitstrings_with_counts(
         initial_states)
     circuits = u(unique_states)
     num_circuits = tf.shape(circuits)[0]
-    num_ops = tf.shape(ops)[0]
     tiled_values = tf.tile(
         tf.expand_dims(u.symbol_values, 0), [num_circuits, 1])
-    tiled_ops = tf.tile(tf.expand_dims(ops, 0), [num_circuits, 1])
-    expectations = self._expectation_function(
-        circuits,
-        u.symbol_names,
-        tiled_values,
-        tiled_ops,
-        tf.tile(tf.expand_dims(counts, 1), [1, num_ops]),
-    )
+    if samples_only:
+      if self.expectation_samples is None:
+        raise TypeError("Need to specify an integer number of samples.")
+      # No need for mask because all entries of sample_counts are the same
+      samples = self._sample_layer(
+          circuits,
+          symbol_names=u.symbol_names,
+          symbol_values=tiled_values,
+          repetitions=tf.expand_dims(self.expectation_samples, 0)
+      ).to_tensor()  # to_tensor safe because ragged tensor is square
+      expectations = tf.map_fn(lambda x: tf.math.reduce_mean(observables.energy(x), keep_dims=True), samples)
+    else:
+      num_ops = tf.shape(ops)[0]
+      tiled_ops = tf.tile(tf.expand_dims(ops, 0), [num_circuits, 1])
+      expectations = self._expectation_function(
+          circuits,
+          u.symbol_names,
+          tiled_values,
+          tiled_ops,
+          tf.tile(tf.expand_dims(counts, 1), [1, num_ops]),
+       )
     return utils.expand_unique_results(post_process(expectations), idx)
 
   def sample(self, initial_states: tf.Tensor, counts: tf.Tensor):

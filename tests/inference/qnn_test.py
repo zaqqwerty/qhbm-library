@@ -277,10 +277,11 @@ class QuantumInferenceTest(parameterized.TestCase, tf.test.TestCase):
   @parameterized.parameters({
       "energy_class": energy_class,
       "energy_args": energy_args,
-  } for energy_class, energy_args in zip([energy.BernoulliEnergy, energy.KOBE],
-                                         [[], [2]]))
+      "general_energy": general_energy,
+  } for energy_class, energy_args, general_energy in zip([energy.BernoulliEnergy, energy.KOBE, MLPEnergy],
+                                                         [[], [2], []], [False, False, True]))
   @test_util.eager_mode_toggle
-  def test_expectation_modular_hamiltonian(self, energy_class, energy_args):
+  def test_expectation_modular_hamiltonian(self, energy_class, energy_args, general_energy):
     """Confirm expectation of modular Hamiltonians works."""
     # set up the modular Hamiltonian to measure
     # EBM
@@ -288,6 +289,7 @@ class QuantumInferenceTest(parameterized.TestCase, tf.test.TestCase):
     energy_h.build([None, self.num_bits])
 
     # QNN
+    # TODO(#171): refactor random QNN
     qubits = cirq.GridQubit.rect(1, self.num_bits)
     batch_size = 1
     n_moments = 4
@@ -306,13 +308,15 @@ class QuantumInferenceTest(parameterized.TestCase, tf.test.TestCase):
                                               self.tf_random_seed)
     circuit_h.set_weights([initial_random_values])
     hamiltonian_measure = hamiltonian.Hamiltonian(energy_h, circuit_h)
-    raw_shards = tfq.from_tensor(hamiltonian_measure.operator_shards)
+    if not general_energy:
+      raw_shards = tfq.from_tensor(hamiltonian_measure.operator_shards)
 
     # set up the circuit to measure against
+    num_expectation_samples = 1e6
     model_raw_circuit = cirq.testing.random_circuit(qubits, n_moments,
                                                     act_fraction)
     model_circuit = circuit.DirectQuantumCircuit(model_raw_circuit)
-    model_infer = qnn.QuantumInference(model_circuit)
+    model_infer = qnn.QuantumInference(model_circuit, expectation_samples=num_expectation_samples)
 
     # bitstring injectors
     all_bitstrings = list(itertools.product([0, 1], repeat=self.num_bits))
@@ -330,23 +334,46 @@ class QuantumInferenceTest(parameterized.TestCase, tf.test.TestCase):
       ]
       return [{**r, **base_resolver} for r in bitstring_resolvers]
 
-    def delta_expectations_func(k, var, delta):
-      """Calculate the expectation with kth entry of `var` perturbed."""
-      num_elts = tf.size(var)
-      old_value = var.read_value()
-      var.assign(old_value + delta * tf.one_hot(k, num_elts, 1.0, 0.0))
-      total_resolvers = generate_resolvers()
-      raw_delta_expectations = tf.stack([
-          tf.stack([
-              hamiltonian_measure.energy.operator_expectation([
-                  cirq.Simulator().simulate_expectation_values(
-                      total_circuit, o, r)[0].real for o in raw_shards
-              ])
-          ]) for r in total_resolvers
-      ])
-      delta_expectations = tf.constant(raw_delta_expectations)
-      var.assign(old_value)
-      return delta_expectations
+    # TODO(#171): refactor delta_expectations_func into a utility
+    if not general_energy:
+      def delta_expectations_func(k, var, delta):
+        """Calculate the expectation with kth entry of `var` perturbed."""
+        num_elts = tf.size(var)
+        old_value = var.read_value()
+        var.assign(old_value + delta * tf.one_hot(k, num_elts, 1.0, 0.0))
+        total_resolvers = generate_resolvers()
+        raw_delta_expectations = tf.stack([
+            tf.stack([
+                hamiltonian_measure.energy.operator_expectation([
+                    cirq.Simulator().simulate_expectation_values(
+                        total_circuit, o, r)[0].real for o in raw_shards
+                 ])
+            ]) for r in total_resolvers
+        ])
+        delta_expectations = tf.constant(raw_delta_expectations)
+        var.assign(old_value)
+        return delta_expectations
+    else:
+      def delta_expectations_func(k, var, delta):
+        """Calculate the expectation with kth entry of `var` perturbed."""
+        num_elts = tf.size(var)
+        old_value = var.read_value()
+        var.assign(old_value + delta * tf.one_hot(k, num_elts, 1.0, 0.0))
+        total_resolvers = generate_resolvers()
+        raw_delta_expectations = []
+        for r in total_resolvers:
+          cirq.Simulator().sample(total_circuit, repetitions=nm, params=r)
+        raw_delta_expectations = tf.stack([
+            tf.stack([
+                hamiltonian_measure.energy.operator_expectation([
+                    cirq.Simulator().simulate_expectation_values(
+                        total_circuit, o, r)[0].real for o in raw_shards
+                 ])
+            ]) for r in total_resolvers
+        ])
+        delta_expectations = tf.constant(raw_delta_expectations)
+        var.assign(old_value)
+        return delta_expectations
 
     expected_expectations = delta_expectations_func(
         0, circuit_h.trainable_variables[0], 0)
@@ -403,6 +430,46 @@ class QuantumInferenceTest(parameterized.TestCase, tf.test.TestCase):
         actual_derivatives_thetas,
         expected_derivatives_thetas,
         rtol=self.close_rtol)
+
+  def test_expectation_general_modular_hamiltonian(self):
+    """Tests expectation when energy function is a general BitstringEnergy."""
+
+    # Get the Hamiltonian to measure.
+    # energy function
+    num_samples = 1e5
+    # TODO(#171): refactor random MLP code
+    bits = random.sample(range(1000), self.num_bits)
+    units = random.sample(range(1, 100), num_layers)
+    activations = random.sample([
+      "elu", "exponential", "gelu", "hard_sigmoid", "linear", "relu",
+      "selu", "sigmoid", "softmax", "softplus", "softsign", "swish", "tanh"
+    ], num_layers)
+    expected_layer_list = []
+    for i in range(num_layers):
+      expected_layer_list.append(
+        tf.keras.layers.Dense(units[i], activation=activations[i]))
+    expected_layer_list.append(tf.keras.layers.Dense(1))
+    expected_layer_list.append(utils.Squeeze(-1))
+    actual_mlp = energy.BitstringEnergy(bits, expected_layer_list)
+    actual_mlp.build([None, self.num_bits])
+    # quantum circuit
+    qubits = cirq.GridQubit.rect(1, self.num_bits)
+    num_layers = 3
+    name = "test_general_modham"
+    pqc = test_util.get_hardware_efficient_model_unitary(qubits, num_layers, name)
+    actual_circuit = circuit.DirectQuantumCircuit(pqc)
+    modham = hamiltonian.Hamiltonian(actual_mlp, actual_circuit)
+
+    # Build the QNN against which to measure the hamiltonian.
+    n_moments = 4
+    act_fraction = 1.0
+    model_raw_circuit = cirq.testing.random_circuit(qubits, n_moments,
+                                                    act_fraction)
+    model_circuit = circuit.DirectQuantumCircuit(model_raw_circuit)
+    model_infer = qnn.QuantumInference(model_circuit)
+
+    
+
 
   @test_util.eager_mode_toggle
   def test_sample_basic(self):

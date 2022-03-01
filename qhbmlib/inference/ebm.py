@@ -279,14 +279,65 @@ class EnergyInference(EnergyInferenceBase):
         """See equation A5 in the QHBM paper appendix for details.
 
         # TODO(#119): confirm equation number.
+        This is the last summand in equation A5.
+        `output_gradients` is  d g / d <f_i>_(p_theta)
+        
+        See "Gradients of non-scalar targets" section in the following link:
+        https://www.tensorflow.org/guide/autodiff
+        
+        Let's walk through the calls that are made:
+        
+        1) `gradient` in tensorflow/python/eager/backprop.py
+           targets, sources, and output_gradients get flattened
+        
+        2) `imperative_grad` in tensorflow/python/eager/imperative_grad.py
+           light wrapper around `TFE_Py_TapeGradient`
+        
+        3) `TFE_Py_TapeGradient` in tensorflow/python/eager/pywrap_tfe_src.cc
+           Vector of `PyObject` pointers is created, with the same number of
+           entries as there are atomic elements in `variables`.  This is
+           handed to a call to `tape_obj->tape->ComputeGradient`
+        
+        4) `ComputeGradient` in tensorflow/c/eager/tape.h
+           Creates map of vectors of `Gradient` pointers.
+           From the docs, this `Gradient` type is described as:
+           "Gradient is the type returned by gradient functions."
+           "In Python TF it's either Tensor or IndexedSlices or None,"
+           "which here we map to nullptr."
+           The map is keyed on IDs from target tensors.
+        
+        5) `InitialGradients` in tensorflow/c/eager/tape.h
+           This call pushes back `output_gradients[i]` onto the vector
+           of `Gradient` pointers keyed by the ID of `average_of_values[i]`
+        
+        6) back inside `ComputeGradient`
+           While loop over each op leading to sources in the graph.
+           Skip ops that don't relate to the gradients.In each loop, derivatives of each target are evaluated with respect
+           to eac
+        
+           
+        for a backpropagation of `average_values[i]`, where `i` indexes the
+        flattened nested structures.
+        for backpropagating each entry of `average_values`.
+
         """
+        
         function_grads = values_tape.gradient(
             average_of_values,
             variables,
             output_gradients=upstream,
             unconnected_gradients=tf.UnconnectedGradients.ZERO)
 
+        # List where each entry is
+        # d g / d <f_i>_(p_theta)
+        # where `i` indexes the atomic elements of `upstream`.
+        # Note `upstream` has the same structure as `average_of_values`.
         flat_upstream = tf.nest.flatten(upstream)
+
+        # f_i(x)
+        # where `i` indexes the atomic elements of `values`, and each atomic
+        # element is a float tensor whose batch dimension is the same as the
+        # batch dimension of `bitstrings`
         flat_values = tf.nest.flatten(values)
         combined_flat = tf.nest.map_structure(lambda x, y: x * y, flat_upstream,
                                               flat_values)

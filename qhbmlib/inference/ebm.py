@@ -279,24 +279,28 @@ class EnergyInference(EnergyInferenceBase):
         """See equation A5 in the QHBM paper appendix for details.
 
         # TODO(#119): confirm equation number.
-        This is the last summand in equation A5.
-        `output_gradients` is  d g / d <f_i>_(p_theta)
-        
-        See "Gradients of non-scalar targets" section in the following link:
+
+        The first call in this function is supposed to compute the last summand
+        in equation A5.  To confirm that the sum over `i` is accounted for,
+        I am doing a manual tracing of the calls made. See also
+        "Gradients of non-scalar targets" section in the following link:
         https://www.tensorflow.org/guide/autodiff
         
-        Let's walk through the calls that are made:
+        Let's walk through the calls that are made.  I'll write the function
+        we are in and the file that function  resides in, followed by
+        salient computations performed there:
         
         1) `gradient` in tensorflow/python/eager/backprop.py
-           targets, sources, and output_gradients get flattened
+           Args `targets`, `sources`, and `output_gradients` each get flattened
         
         2) `imperative_grad` in tensorflow/python/eager/imperative_grad.py
-           light wrapper around `TFE_Py_TapeGradient`
-        
+           Light wrapper around `TFE_Py_TapeGradient`
+
         3) `TFE_Py_TapeGradient` in tensorflow/python/eager/pywrap_tfe_src.cc
            Vector of `PyObject` pointers is created, with the same number of
            entries as there are atomic elements in `variables`.  This is
-           handed to a call to `tape_obj->tape->ComputeGradient`
+           handed to a call to `tape_obj->tape->ComputeGradient`, so that
+           function can store final gradient results in it.
         
         4) `ComputeGradient` in tensorflow/c/eager/tape.h
            Creates map of vectors of `Gradient` pointers.
@@ -304,24 +308,56 @@ class EnergyInference(EnergyInferenceBase):
            "Gradient is the type returned by gradient functions."
            "In Python TF it's either Tensor or IndexedSlices or None,"
            "which here we map to nullptr."
-           The map is keyed on IDs from target tensors.
+           This map will be keyed by tensor IDs of both targets and sources.
+           This map is named `gradients`.
         
         5) `InitialGradients` in tensorflow/c/eager/tape.h
            This call pushes back `output_gradients[i]` onto the vector
-           of `Gradient` pointers keyed by the ID of `average_of_values[i]`
+           of `Gradient` pointers keyed by the ID of `average_of_values[i]`.
         
         6) back inside `ComputeGradient`
-           While loop over each op leading to sources in the graph.
-           Skip ops that don't relate to the gradients.In each loop, derivatives of each target are evaluated with respect
-           to eac
-        
-           
-        for a backpropagation of `average_values[i]`, where `i` indexes the
-        flattened nested structures.
-        for backpropagating each entry of `average_values`.
+           While loop over remaining stack of unprocessed graph ops.
+           In the loop, make a note of which source and target tensors appear
+           in the op computation.  Make a new vector of `Gradient` pointers,
+           called `in_gradients`.
 
-        """
+        7) `CallBackwardFunction` in tensorflow/python/eager/pywrap_tfe_src.cc
+           The gradient to source is computed and recorded on `in_gradients`.
         
+        8) back inside `ComputeGradient`
+           For each input tensor, append the result from `in_gradients[i]`
+           to the vector in `gradients` keyed by that input tensor's ID.
+           After all the ops have been processed by the while loop of step (6),
+           start putting gradients into the final vector of gradients which was
+           created back in step (3).
+
+           My understanding of the current state at this point:
+           *****
+           `gradients` contains a separate vector of backpropagated derivatives
+           for each entry `j` of thetas.  The vector holds each entry `i` of the
+           last summand in equation A5 for that particular `j`.
+           *****
+           
+           Now the check on the sum assumption.  See this link:
+           https://github.com/tensorflow/tensorflow/blob/3f878cff5b698b82eea85db2b60d65a2e320850e/tensorflow/c/eager/tape.h#L878
+           If there is more than one entry in the gradient vector for a given
+           source, `AggregateGradients` is called on it.
+
+        9) `AggregateGradients` of tensorflow/python/eager/pywrap_tfe_src.cc
+           `aggregate_fn_` is called, which is a wrapper on `aggregate_fn`
+
+        10) `VSpace` in tensorflow/python/eager/backprop.py
+           We see that `aggregate_fn` is set to `_aggregate_grads`.
+           `_aggregate_grads` calls `add_n`
+
+        11) `add_n` in tensorflow/python/ops/math_ops.py
+           Docstring says, "Adds all input tensors element-wise".
+
+        So, the summation over i in the last summand of equation A5 seems to be
+        occurring as expected.
+        """
+        # This is the last summand in equation A5.
+        # `output_gradients` is  d g / d <f_i>_(p_theta)
         function_grads = values_tape.gradient(
             average_of_values,
             variables,

@@ -387,15 +387,17 @@ class EnergyInference(EnergyInferenceBase):
 
         # Summing over i first requires summing over all inner indices.
         # in the notes is only the outermost summation over i is shown.
-        sum_dg_dfi_times_fi = tf.nest.map_structure(lambda x: tf.reduce_sum(x), dg_dfi_times_fi)
+        sum_dg_dfi_times_fi = tf.nest.map_structure(lambda x: tf.reduce_sum(x),
+                                                    dg_dfi_times_fi)
 
         # Do the outer sum over i.  This is now a scalar.
-        i_sum_dg_dfi_times_fi = tf.reduce_sum(tf.stack(sum_dg_dfi_times_fi), 0)        
+        i_sum_dg_dfi_times_fi = tf.reduce_sum(tf.stack(sum_dg_dfi_times_fi), 0)
 
         # d <E_theta> / d theta_j
         average_of_energies_grads = tf.nest.map_structure(
             lambda x: utils.weighted_average(counts, x), energies_grads)
-        first_summand = tf.nest.map_structure(lambda x: x * i_sum_dg_dfi_times_fi, average_of_energies_grads)
+        first_summand = tf.nest.map_structure(
+            lambda x: x * i_sum_dg_dfi_times_fi, average_of_energies_grads)
 
         ####
         # Compute middle summand in equation A5.
@@ -424,7 +426,8 @@ class EnergyInference(EnergyInferenceBase):
             energies_grads)
 
         middle_summand = tf.nest.map_structure(
-            lambda x: utils.weighted_average(counts, x), energy_times_combined_sum)
+            lambda x: utils.weighted_average(counts, x),
+            energy_times_combined_sum)
 
         ####
         # Last summand in equation A5.
@@ -438,8 +441,8 @@ class EnergyInference(EnergyInferenceBase):
 
         # Note: upstream gradient is already a coefficient in fs, ms, and ls.
         return tuple(), [
-            fs - ms + ls for fs, ms, ls in zip(
-                first_summand, middle_summand, last_summand)
+            fs - ms + ls
+            for fs, ms, ls in zip(first_summand, middle_summand, last_summand)
         ]
 
       return average_of_values, grad_fn

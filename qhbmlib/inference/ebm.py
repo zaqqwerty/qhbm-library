@@ -436,7 +436,7 @@ class EnergyInference(EnergyInferenceBase):
             output_gradients=upstream,
             unconnected_gradients=tf.UnconnectedGradients.ZERO)
 
-        # Note: upstream gradient is already a coefficient in poa, aop, and fg.
+        # Note: upstream gradient is already a coefficient in fs, ms, and ls.
         return tuple(), [
             fs - ms + ls for fs, ms, ls in zip(
                 first_summand, middle_summand, last_summand)

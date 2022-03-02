@@ -285,14 +285,14 @@ class EnergyInference(EnergyInferenceBase):
         I am doing a manual tracing of the calls made. See also
         "Gradients of non-scalar targets" section in the following link:
         https://www.tensorflow.org/guide/autodiff
-        
+
         Let's walk through the calls that are made.  I'll write the function
         we are in and the file that function resides in, followed by
         salient computations performed there:
-        
+
         1) `gradient` in tensorflow/python/eager/backprop.py
            Args `targets`, `sources`, and `output_gradients` each get flattened
-        
+
         2) `imperative_grad` in tensorflow/python/eager/imperative_grad.py
            Light wrapper around `TFE_Py_TapeGradient`
 
@@ -301,7 +301,7 @@ class EnergyInference(EnergyInferenceBase):
            entries as there are atomic elements in `variables`.  This is
            handed to a call to `tape_obj->tape->ComputeGradient`, so that
            function can store final gradient results in it.
-        
+
         4) `ComputeGradient` in tensorflow/c/eager/tape.h
            Creates map of vectors of `Gradient` pointers.
            From the docs, this `Gradient` type is described as:
@@ -310,11 +310,11 @@ class EnergyInference(EnergyInferenceBase):
            which here we map to nullptr."
            This map will be keyed by tensor IDs of both targets and sources.
            This map is named `gradients`.
-        
+
         5) `InitialGradients` in tensorflow/c/eager/tape.h
            This call pushes back `output_gradients[i]` onto the vector
            of `Gradient` pointers keyed by the ID of `average_of_values[i]`.
-        
+
         6) back inside `ComputeGradient`
            While loop over remaining stack of unprocessed graph ops.
            In the loop, make a note of which source and target tensors appear
@@ -323,7 +323,7 @@ class EnergyInference(EnergyInferenceBase):
 
         7) `CallBackwardFunction` in tensorflow/python/eager/pywrap_tfe_src.cc
            The gradient to source is computed and recorded on `in_gradients`.
-        
+
         8) back inside `ComputeGradient`
            For each input tensor, append the result from `in_gradients[i]`
            to the vector in `gradients` keyed by that input tensor's ID.
@@ -337,7 +337,7 @@ class EnergyInference(EnergyInferenceBase):
            for each entry `j` of thetas.  The vector holds each entry `i` of the
            last summand in equation A5 for that particular `j`.
            *****
-           
+
            Now the check on the sum assumption.  See this link:
            https://github.com/tensorflow/tensorflow/blob/3f878cff5b698b82eea85db2b60d65a2e320850e/tensorflow/c/eager/tape.h#L878
            If there is more than one entry in the gradient vector for a given
@@ -387,7 +387,7 @@ class EnergyInference(EnergyInferenceBase):
 
         # Summing over i first requires summing over all inner indices.
         # in the notes is only the outermost summation over i is shown.
-        sum_dg_dfi_times_fi = tf.nest.map_structure(lambda x: tf.reduce_sum(x),
+        sum_dg_dfi_times_fi = tf.nest.map_structure(tf.reduce_sum,
                                                     dg_dfi_times_fi)
 
         # Do the outer sum over i.  This is now a scalar.

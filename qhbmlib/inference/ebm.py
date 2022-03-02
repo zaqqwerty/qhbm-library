@@ -280,7 +280,7 @@ class EnergyInference(EnergyInferenceBase):
 
         # TODO(#119): confirm equation number.
 
-        The first call in this function is supposed to compute the last summand
+        The `values_tape.gradient` call is supposed to compute the last summand
         in equation A5.  To confirm that the sum over `i` is accounted for,
         I am doing a manual tracing of the calls made. See also
         "Gradients of non-scalar targets" section in the following link:
@@ -305,9 +305,9 @@ class EnergyInference(EnergyInferenceBase):
         4) `ComputeGradient` in tensorflow/c/eager/tape.h
            Creates map of vectors of `Gradient` pointers.
            From the docs, this `Gradient` type is described as:
-           "Gradient is the type returned by gradient functions."
-           "In Python TF it's either Tensor or IndexedSlices or None,"
-           "which here we map to nullptr."
+           "Gradient is the type returned by gradient functions.
+           In Python TF it's either Tensor or IndexedSlices or None
+           which here we map to nullptr."
            This map will be keyed by tensor IDs of both targets and sources.
            This map is named `gradients`.
         
@@ -356,25 +356,58 @@ class EnergyInference(EnergyInferenceBase):
         So, the summation over i in the last summand of equation A5 seems to be
         occurring as expected.
         """
-        # This is the last summand in equation A5.
-        # `output_gradients` is  d g / d <f_i>_(p_theta)
-        function_grads = values_tape.gradient(
-            average_of_values,
+        ####
+        # Preliminary calculations.
+
+        # Compute grad E terms.
+        with tf.GradientTape() as tape:
+          energies = self.energy(bitstrings)
+        # d E_theta(x) / d theta_j
+        # where x is the first index of `energies_grad`, j the second
+        energies_grads = tape.jacobian(
+            energies,
             variables,
-            output_gradients=upstream,
             unconnected_gradients=tf.UnconnectedGradients.ZERO)
+        # d <E_theta> / d theta_j
+        average_of_energies_grads = tf.nest.map_structure(
+            lambda x: utils.weighted_average(counts, x), energies_grads)
+
+        ####
+        # First summand in equation A5.
 
         # List where each entry is
-        # d g / d <f_i>_(p_theta)
+        # d g / d <f_i>
         # where `i` indexes the atomic elements of `upstream`.
         # Note `upstream` has the same structure as `average_of_values`.
-        flat_upstream = tf.nest.flatten(upstream)
+        dg_dafi = tf.nest.flatten(upstream)
 
-        # f_i(x)
-        # where `i` indexes the atomic elements of `values`, and each atomic
-        # element is a float tensor whose batch dimension is the same as the
-        # batch dimension of `bitstrings`
-        flat_values = tf.nest.flatten(values)
+        # <f_i>, a for average
+        afi = tf.nest.flatten(average_of_values)
+        
+        # Multiply d g / d <f_i> times <f_i> for each i
+        dg_dafi_times_afi = tf.nest.map_structure(lambda x, y: x * y, dg_dafi, afi)
+
+        # Summing over i first requires summing over all inner indices
+        sum_dg_dafi_times_afi = tf.nest.map_structure(lambda x: tf.reduce_sum(x), dg_dafi_times_afi)
+        
+        # Do the final sum over i
+        i_sum_dg_dafi_times_afi = tf.reduce_sum(tf.stack(sum_dg_dafi_times_afi), 0)
+        
+
+        # The multiplication is taking advantage of broadcast rules.
+        # The `tf.math.multiply` op links to the NumPy basics.broadcasting
+        # guide.  There, we have the general broadcasting rules:
+        # "When operating on two arrays, NumPy compares their shapes
+        # element-wise. It starts with the trailing (i.e. rightmost) dimensions
+        # and works its way left. Two dimensions are compatible when
+        #   1. they are equal, or
+        #   2. one of them is 1"
+        #
+        # Here, all the rightmost dimensions of `x` and `y` are equal, since
+        # for each pair of atomic elements `x` and `y`, we have
+        # tf.shape(x) == tf.shape(y)[1:], and
+        # tf.shape(y)[0] == tf.shape(bitstrings)[0].
+        # Thus `x` is multiplied against each row of `y`.
         combined_flat = tf.nest.map_structure(lambda x, y: x * y, flat_upstream,
                                               flat_values)
         combined_flat_sum = tf.nest.map_structure(
@@ -382,15 +415,6 @@ class EnergyInference(EnergyInferenceBase):
         combined_sum = tf.reduce_sum(tf.stack(combined_flat_sum), 0)
         average_of_combined_sum = utils.weighted_average(counts, combined_sum)
 
-        # Compute grad E terms.
-        with tf.GradientTape() as tape:
-          energies = self.energy(bitstrings)
-        energies_grads = tape.jacobian(
-            energies,
-            variables,
-            unconnected_gradients=tf.UnconnectedGradients.ZERO)
-        average_of_energies_grads = tf.nest.map_structure(
-            lambda x: utils.weighted_average(counts, x), energies_grads)
 
         product_of_averages = tf.nest.map_structure(
             lambda x: x * average_of_combined_sum, average_of_energies_grads)
@@ -400,6 +424,15 @@ class EnergyInference(EnergyInferenceBase):
             energies_grads)
         average_of_products = tf.nest.map_structure(
             lambda x: utils.weighted_average(counts, x), products)
+
+        # Last summand in equation A5.
+        # `output_gradients` is  d g / d <f_i>_(p_theta)
+        # See discussion in the docstring for details.
+        function_grads = values_tape.gradient(
+            average_of_values,
+            variables,
+            output_gradients=upstream,
+            unconnected_gradients=tf.UnconnectedGradients.ZERO)
 
         # Note: upstream gradient is already a coefficient in poa, aop, and fg.
         return tuple(), [

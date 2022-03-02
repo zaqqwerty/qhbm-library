@@ -287,7 +287,7 @@ class EnergyInference(EnergyInferenceBase):
         https://www.tensorflow.org/guide/autodiff
         
         Let's walk through the calls that are made.  I'll write the function
-        we are in and the file that function  resides in, followed by
+        we are in and the file that function resides in, followed by
         salient computations performed there:
         
         1) `gradient` in tensorflow/python/eager/backprop.py
@@ -359,76 +359,78 @@ class EnergyInference(EnergyInferenceBase):
         ####
         # Preliminary calculations.
 
+        # d g / d <f_i>
+        # This is a list where `i` indexes the atomic elements of `upstream`.
+        # Note `upstream` has the same structure as `average_of_values`.
+        dg_dfi = tf.nest.flatten(upstream)
+
         # Compute grad E terms.
         with tf.GradientTape() as tape:
           energies = self.energy(bitstrings)
         # d E_theta(x) / d theta_j
-        # where x is the first index of `energies_grad`, j the second
+        # Returned value is a list, one entry for each variable.
+        # Each entry is a tensor; first index x is the bitstring, remaining
+        # indices are the same as the corresponding entry of `variables`
         energies_grads = tape.jacobian(
             energies,
             variables,
             unconnected_gradients=tf.UnconnectedGradients.ZERO)
+
+        ####
+        # Compute first summand in equation A5.
+
+        # <f_i>
+        fi = tf.nest.flatten(average_of_values)
+
+        # Multiply d g / d <f_i> times <f_i> for each i
+        dg_dfi_times_fi = tf.nest.map_structure(lambda x, y: x * y, dg_dfi, fi)
+
+        # Summing over i first requires summing over all inner indices.
+        # in the notes is only the outermost summation over i is shown.
+        sum_dg_dfi_times_fi = tf.nest.map_structure(lambda x: tf.reduce_sum(x), dg_dfi_times_fi)
+
+        # Do the outer sum over i.  This is now a scalar.
+        i_sum_dg_dfi_times_fi = tf.reduce_sum(tf.stack(sum_dg_dfi_times_fi), 0)        
+
         # d <E_theta> / d theta_j
         average_of_energies_grads = tf.nest.map_structure(
             lambda x: utils.weighted_average(counts, x), energies_grads)
+        first_summand = tf.nest.map_structure(lambda x: x * i_sum_dg_dfi_times_fi, average_of_energies_grads)
 
         ####
-        # First summand in equation A5.
+        # Compute middle summand in equation A5.
 
-        # List where each entry is
-        # d g / d <f_i>
-        # where `i` indexes the atomic elements of `upstream`.
-        # Note `upstream` has the same structure as `average_of_values`.
-        dg_dafi = tf.nest.flatten(upstream)
+        # fi(x), the ith entry of f computed against bitstring x
+        fi_x = tf.nest.flatten(values)
 
-        # <f_i>, a for average
-        afi = tf.nest.flatten(average_of_values)
-        
-        # Multiply d g / d <f_i> times <f_i> for each i
-        dg_dafi_times_afi = tf.nest.map_structure(lambda x, y: x * y, dg_dafi, afi)
-
-        # Summing over i first requires summing over all inner indices
-        sum_dg_dafi_times_afi = tf.nest.map_structure(lambda x: tf.reduce_sum(x), dg_dafi_times_afi)
-        
-        # Do the final sum over i
-        i_sum_dg_dafi_times_afi = tf.reduce_sum(tf.stack(sum_dg_dafi_times_afi), 0)
-        
-
-        # The multiplication is taking advantage of broadcast rules.
-        # The `tf.math.multiply` op links to the NumPy basics.broadcasting
-        # guide.  There, we have the general broadcasting rules:
-        # "When operating on two arrays, NumPy compares their shapes
-        # element-wise. It starts with the trailing (i.e. rightmost) dimensions
-        # and works its way left. Two dimensions are compatible when
-        #   1. they are equal, or
-        #   2. one of them is 1"
-        #
+        # The multiplication takes advantage of broadcast rules.
         # Here, all the rightmost dimensions of `x` and `y` are equal, since
         # for each pair of atomic elements `x` and `y`, we have
         # tf.shape(x) == tf.shape(y)[1:], and
         # tf.shape(y)[0] == tf.shape(bitstrings)[0].
         # Thus `x` is multiplied against each row of `y`.
-        combined_flat = tf.nest.map_structure(lambda x, y: x * y, flat_upstream,
-                                              flat_values)
+        combined_flat = tf.nest.map_structure(lambda x, y: x * y, dg_dfi, fi_x)
+
+        # Sum out inner indices; map over bitstrings to preserve batch dimension
         combined_flat_sum = tf.nest.map_structure(
             lambda x: tf.map_fn(tf.reduce_sum, x), combined_flat)
+
+        # Sum over i, leaving 1D tensor, a scalar at each bitstring.
         combined_sum = tf.reduce_sum(tf.stack(combined_flat_sum), 0)
-        average_of_combined_sum = utils.weighted_average(counts, combined_sum)
 
-
-        product_of_averages = tf.nest.map_structure(
-            lambda x: x * average_of_combined_sum, average_of_energies_grads)
-
-        products = tf.nest.map_structure(
+        # multiply by the energy derivative at each bitstring
+        energy_times_combined_sum = tf.nest.map_structure(
             lambda x: tf.einsum("i...,i->i...", x, combined_sum),
             energies_grads)
-        average_of_products = tf.nest.map_structure(
-            lambda x: utils.weighted_average(counts, x), products)
 
+        middle_summand = tf.nest.map_structure(
+            lambda x: utils.weighted_average(counts, x), energy_times_combined_sum)
+
+        ####
         # Last summand in equation A5.
-        # `output_gradients` is  d g / d <f_i>_(p_theta)
+        # `output_gradients` is  d g / d <f_i>
         # See discussion in the docstring for details.
-        function_grads = values_tape.gradient(
+        last_summand = values_tape.gradient(
             average_of_values,
             variables,
             output_gradients=upstream,
@@ -436,8 +438,8 @@ class EnergyInference(EnergyInferenceBase):
 
         # Note: upstream gradient is already a coefficient in poa, aop, and fg.
         return tuple(), [
-            poa - aop + fg for poa, aop, fg in zip(
-                product_of_averages, average_of_products, function_grads)
+            fs - ms + ls for fs, ms, ls in zip(
+                first_summand, middle_summand, last_summand)
         ]
 
       return average_of_values, grad_fn

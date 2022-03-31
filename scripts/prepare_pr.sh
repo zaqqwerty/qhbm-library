@@ -22,4 +22,4 @@ if [ "$retval" == 1 ]
 then
   exit 1
 fi
-poetry run pytest --cov .
+poetry run pytest --cov=qhbmlib ./tests

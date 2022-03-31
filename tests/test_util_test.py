@@ -158,6 +158,14 @@ class RandomMatrixTest(tf.test.TestCase):
         self.assertAllClose(actual_sorted_probs, expected_sorted_probs)
 
 
+class StableClassicalEntropy(tf.test.TestCase):
+  """Tests stable_classical_entropy"""
+
+  def test_exact_entropy(self):
+    """Compares against exact entropy with zero probs present."""
+    
+
+
 class EagerModeToggleTest(tf.test.TestCase):
   """Tests eager_mode_toggle."""
 
